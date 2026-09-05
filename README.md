@@ -118,3 +118,20 @@ Per verificare che la logica di parsing rilevi correttamente i prodotti disponib
 python test_system.py
 ```
 Il test interroga in tempo reale sia il link del 3694 (attualmente non disponibile) sia il link di test fornito (disponibile), verificando al 100% l'accuratezza dei segnali.
+
+---
+
+## 🔗 Integrazione con Server Watchdog / Bot Condiviso
+
+Se disponi già di un bot Telegram attivo sul tuo server (come `server-watchdog`), puoi evitare conflitti di polling Telegram (`409 Conflict`) impostando nel file `.env`:
+
+```env
+ENABLE_POLLING=false
+API_HOST=0.0.0.0
+API_PORT=8085
+```
+
+In questa modalità:
+1. **Notifiche Push Autonome**: `topolino_monitor` invia direttamente via Telegram API tutti gli allarmi immediati (raffica 3x sonori), promemoria ciclici e heartbeat orario.
+2. **Micro API HTTP Interna**: Espone l'endpoint `http://127.0.0.1:8085` (`/status`, `/check`, `/interval`, `/stop`, `/resume`, `/test`).
+3. **Comandi Centralizzati**: Il bot principale del server (es. `@JayAM02Bot`) inoltra i comandi con `/topolino`, `/topolino check`, `/topolino interval 20`, `/topolino stop`, `/topolino test`.
