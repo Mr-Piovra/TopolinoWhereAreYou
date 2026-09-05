@@ -68,5 +68,12 @@ class TestTopolinoMonitor(unittest.TestCase):
         finally:
             shutil.rmtree(temp_dir)
 
+    def test_api_config_defaults(self):
+        """Verifica le impostazioni API e polling."""
+        cfg = Config()
+        self.assertEqual(cfg.api_port, 8085)
+        self.assertTrue(cfg.enable_polling)
+        print("[OK] Default API port (8085) e enable_polling corretti")
+
 if __name__ == "__main__":
     unittest.main()

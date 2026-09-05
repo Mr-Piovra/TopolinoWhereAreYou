@@ -5,6 +5,8 @@ services:
     restart: unless-stopped
     env_file:
       - .env
+    ports:
+      - "127.0.0.1:8085:8085"
     volumes:
       - ./data:/app/data
     logging:

@@ -8,6 +8,7 @@ import sys
 from datetime import datetime, timedelta
 from typing import Optional
 
+from aiohttp import web
 from bot import TelegramMonitorBot
 from checker import CheckResult, PaniniAvailabilityChecker
 from config import config
@@ -39,6 +40,7 @@ class TopolinoMonitorService:
         self.last_heartbeat_time: datetime = datetime.now()
         self.recurring_cycle: int = 0
         self.consecutive_errors: int = 0
+        self.api_runner: Optional[web.AppRunner] = None
 
         self._load_state()
 
@@ -73,6 +75,99 @@ class TopolinoMonitorService:
         """Funzione invocata dal comando /check di Telegram."""
         return self.checker.check()
 
+
+    async def _init_http_api(self):
+        """Avvia un server HTTP asincrono leggero per comandi esterni da Watchdog/host."""
+        app = web.Application()
+        app.router.add_get('/status', self._api_status)
+        app.router.add_get('/check', self._api_check)
+        app.router.add_post('/check', self._api_check)
+        app.router.add_post('/interval', self._api_interval)
+        app.router.add_post('/stop', self._api_stop)
+        app.router.add_post('/mute', self._api_stop)
+        app.router.add_post('/resume', self._api_resume)
+        app.router.add_post('/test', self._api_test)
+
+        self.api_runner = web.AppRunner(app)
+        await self.api_runner.setup()
+        site = web.TCPSite(self.api_runner, self.config.api_host, self.config.api_port)
+        await site.start()
+        logger.info(f"API HTTP interna avviata su http://{self.config.api_host}:{self.config.api_port}")
+
+    async def _api_status(self, request: web.Request) -> web.Response:
+        uptime = (datetime.now() - self.bot.start_time).total_seconds()
+        last_res = self.bot.last_check_result
+        return web.json_response({
+            "service": "topolino-monitor",
+            "is_available": self.was_available,
+            "title": last_res.title if last_res else "Topolino 3694",
+            "price": last_res.price if last_res else 10.35,
+            "presale_date": last_res.presale_date if last_res else None,
+            "status_raw": last_res.status_raw if last_res else "In attesa del primo check",
+            "total_checks": self.bot.total_checks,
+            "check_interval_seconds": self.config.check_interval_seconds,
+            "jitter_seconds": self.config.jitter_seconds,
+            "is_muted": self.bot.is_muted,
+            "last_check_time": self.bot.last_check_time.isoformat() if self.bot.last_check_time else None,
+            "uptime_seconds": int(uptime),
+            "target_url": self.config.target_url
+        })
+
+    async def _api_check(self, request: web.Request) -> web.Response:
+        loop = asyncio.get_running_loop()
+        result = await loop.run_in_executor(None, self.checker.check)
+        self.bot.total_checks += 1
+        self.bot.last_check_result = result
+        self.bot.last_check_time = datetime.now()
+        return web.json_response({
+            "is_available": result.is_available,
+            "title": result.title,
+            "price": result.price,
+            "presale_date": result.presale_date,
+            "status_raw": result.status_raw,
+            "response_time": result.response_time,
+            "status_code": result.status_code,
+            "error": result.error,
+            "signals": result.signals
+        })
+
+    async def _api_interval(self, request: web.Request) -> web.Response:
+        val = request.query.get("val")
+        if not val and request.can_read_body:
+            try:
+                body = await request.json()
+                val = body.get("val") or body.get("interval")
+            except Exception:
+                pass
+        try:
+            new_interval = int(val)
+            if new_interval < 5 or new_interval > 600:
+                return web.json_response({"error": "L'intervallo deve essere tra 5 e 600 secondi"}, status=400)
+            self.config.check_interval_seconds = new_interval
+            self._on_interval_changed(new_interval)
+            return web.json_response({"ok": True, "check_interval_seconds": new_interval})
+        except (ValueError, TypeError):
+            return web.json_response({"error": "Parametro val non valido"}, status=400)
+
+    async def _api_stop(self, request: web.Request) -> web.Response:
+        self.bot.is_muted = True
+        self._save_state()
+        return web.json_response({"ok": True, "is_muted": True, "message": "Promemoria ricorrenti silenziati"})
+
+    async def _api_resume(self, request: web.Request) -> web.Response:
+        self.bot.is_muted = False
+        self._save_state()
+        return web.json_response({"ok": True, "is_muted": False, "message": "Promemoria ricorrenti riattivati"})
+
+    async def _api_test(self, request: web.Request) -> web.Response:
+        asyncio.create_task(self.bot.send_burst_alert(
+            title="Topolino 3694 Con Seconda Parte Modellino F1 (TEST)",
+            price=10.35,
+            url=self.config.target_url,
+            is_simulation=True
+        ))
+        return web.json_response({"ok": True, "message": "Allarme test a raffica inviato"})
+
     def _on_interval_changed(self, new_val: int):
         """Callback invocata dal comando /interval di Telegram."""
         logger.info("Intervallo di controllo aggiornato a %s secondi", new_val)
@@ -91,6 +186,12 @@ class TopolinoMonitorService:
         warnings = self.config.validate()
         for w in warnings:
             logger.warning("ATTENZIONE: %s", w)
+
+        # Avvia micro API HTTP interna
+        try:
+            await self._init_http_api()
+        except Exception as e:
+            logger.error(f"Errore avvio API HTTP: {e}")
 
         # Inizializza il bot Telegram
         await self.bot.initialize()
@@ -210,8 +311,13 @@ class TopolinoMonitorService:
         self._save_state()
 
     async def stop(self):
-        """Ferma il servizio e il bot Telegram."""
+        """Ferma il servizio, l'API HTTP e il bot Telegram."""
         self.is_running = False
+        if self.api_runner:
+            try:
+                await self.api_runner.cleanup()
+            except Exception as e:
+                logger.debug(f"Errore cleanup API runner: {e}")
         await self.bot.stop()
         self._save_state()
         logger.info("Servizio arrestato correttamente.")

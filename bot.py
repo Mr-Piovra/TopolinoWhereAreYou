@@ -62,14 +62,17 @@ class TelegramMonitorBot:
 
         await self.application.initialize()
         await self.application.start()
-        await self.application.updater.start_polling(drop_pending_updates=True)
-        logger.info("Bot Telegram avviato e in ascolto per comandi.")
+        if self.config.enable_polling:
+            await self.application.updater.start_polling(drop_pending_updates=True)
+            logger.info("Bot Telegram avviato e in ascolto per comandi (polling attivo).")
+        else:
+            logger.info("Bot Telegram inizializzato in modalità notifiche push (polling getUpdates disabilitato).")
 
     async def stop(self):
         """Arresto pulito del bot."""
         if self.application:
             logger.info("Arresto bot Telegram in corso...")
-            if self.application.updater:
+            if self.config.enable_polling and self.application.updater:
                 await self.application.updater.stop()
             await self.application.stop()
             await self.application.shutdown()

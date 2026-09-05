@@ -41,6 +41,13 @@ class Config:
     # Livello di log
     log_level: str = os.getenv("LOG_LEVEL", "INFO").upper()
 
+    # Abilita il polling Telegram autonomo (impostare a False se si condivide il token bot con un altro servizio)
+    enable_polling: bool = os.getenv("ENABLE_POLLING", "true").lower() in ("true", "1", "yes")
+
+    # Micro API HTTP interna per integrazione comandi (status, check, interval, stop)
+    api_host: str = os.getenv("API_HOST", "0.0.0.0")
+    api_port: int = int(os.getenv("API_PORT", "8085"))
+
     def validate(self) -> list[str]:
         warnings = []
         if not self.telegram_bot_token:
